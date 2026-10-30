@@ -30,7 +30,7 @@ import shutil
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from common.hashing import sha256_file
 from common.models import FileEntry, JobSpec, JobState, OutputEntry
@@ -172,36 +172,59 @@ class JobStore:
             if not self.job_exists(job_id):
                 return job_id
 
-    def create_job(self, spec: JobSpec) -> Tuple[str, str]:
-        """创建作业目录并落盘 spec.json / state.json，返回 ``(job_id, spec_fp)``。"""
-        job_id = self.new_job_id()
+    def create_job(self, spec: JobSpec, job_id: Optional[str] = None) -> Tuple[str, str]:
+        """Create a job directory and persist spec/state.
+
+        ``job_id`` is normally generated here.  Idempotency reservations pass a
+        previously persisted id so a crash between "reserve id" and "create
+        directory" can be retried without creating a second job.  With an
+        explicit id this operation is idempotent **only** when the on-disk spec
+        fingerprint matches; a different spec is rejected instead of silently
+        reusing another caller's job.
+        """
+        if job_id is None:
+            job_id = self.new_job_id()
+        else:
+            job_id = self.validate_job_id(str(job_id))
         fingerprint = canonical_spec_fingerprint(spec)
         directory = self.job_dir(job_id)
-        (directory / "inputs").mkdir(parents=True)
-        (directory / "outputs").mkdir(parents=True)
-        (directory / "logs").mkdir(parents=True)
-        _atomic_write_json(self.spec_path(job_id), spec.to_dict())
-        now = time.time()
-        state: Dict[str, Any] = {
-            "job_id": job_id,
-            "spec_fingerprint": fingerprint,
-            "state": JobState.UPLOADING.value,
-            "progress": 0.0,
-            "created_at": now,
-            "updated_at": now,
-            "started_at": None,
-            "finished_at": None,
-            "exit_code": None,
-            "duration_s": None,
-            "outputs": [],
-            "log_tail": [],
-            "env_state": None,
-            "gpus": [],
-            "uploads": {},
-            "error": None,
-        }
-        _atomic_write_json(self.state_path(job_id), state)
-        return job_id, fingerprint
+        with self.job_lock(job_id):
+            state_path = self.state_path(job_id)
+            if state_path.is_file():
+                existing = self.load_state(job_id)
+                stored = str(existing.get("spec_fingerprint") or "")
+                if stored and stored != fingerprint:
+                    raise JobConflictError(
+                        f"作业 {job_id} 已绑定到不同 spec，拒绝幂等重建"
+                    )
+                return job_id, fingerprint
+            # A crash can leave an empty/partial directory after mkdir.  Fill
+            # in the missing pieces; never delete a directory here.
+            (directory / "inputs").mkdir(parents=True, exist_ok=True)
+            (directory / "outputs").mkdir(parents=True, exist_ok=True)
+            (directory / "logs").mkdir(parents=True, exist_ok=True)
+            _atomic_write_json(self.spec_path(job_id), spec.to_dict())
+            now = time.time()
+            state: Dict[str, Any] = {
+                "job_id": job_id,
+                "spec_fingerprint": fingerprint,
+                "state": JobState.UPLOADING.value,
+                "progress": 0.0,
+                "created_at": now,
+                "updated_at": now,
+                "started_at": None,
+                "finished_at": None,
+                "exit_code": None,
+                "duration_s": None,
+                "outputs": [],
+                "log_tail": [],
+                "env_state": None,
+                "gpus": [],
+                "uploads": {},
+                "error": None,
+            }
+            _atomic_write_json(self.state_path(job_id), state)
+            return job_id, fingerprint
 
     def load_spec(self, job_id: str) -> JobSpec:
         path = self.spec_path(job_id)

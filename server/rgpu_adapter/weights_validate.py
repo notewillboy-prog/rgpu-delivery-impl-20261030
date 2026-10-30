@@ -84,12 +84,21 @@ def _fingerprint(hashes: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(hashes, sort_keys=True).encode("utf-8")).hexdigest()
 
 
+def _is_sha256(value) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(ch in "0123456789abcdef" for ch in value)
+    )
+
+
 def validate_weights_zip(
     path: str | Path,
     *,
     family: str,
     expected_parent_fingerprint: str | None = None,
     expected_parent_model_id: str | None = None,
+    expected_parent_model_ids: dict[str, str] | None = None,
     expected_classes: set[str] | dict | None = None,
 ) -> dict:
     path = Path(path)
@@ -139,22 +148,89 @@ def validate_weights_zip(
         if quality != "needs_review":
             raise ValidationError(f"result_manifest.quality_status must be needs_review, got {quality!r}")
         result["quality_status"] = quality
-        if expected_parent_fingerprint and manifest.get("parent_model_fingerprint"):
-            if manifest["parent_model_fingerprint"] != expected_parent_fingerprint:
+        if expected_parent_fingerprint is not None:
+            # If the caller supplies an expected parent fingerprint, the
+            # archive MUST carry the same non-empty fingerprint.  A missing or
+            # empty field is a rejection, not an optional-field warning.
+            if not _is_sha256(expected_parent_fingerprint):
+                raise ValidationError("expected parent fingerprint is not a SHA-256")
+            actual_parent_fp = manifest.get("parent_model_fingerprint")
+            if not isinstance(actual_parent_fp, str) or not actual_parent_fp:
+                raise ValidationError(
+                    "result_manifest.parent_model_fingerprint is missing"
+                )
+            if not _is_sha256(actual_parent_fp):
+                raise ValidationError(
+                    "result_manifest.parent_model_fingerprint is not a SHA-256"
+                )
+            if actual_parent_fp != expected_parent_fingerprint:
                 raise ValidationError("result_manifest.parent_model_fingerprint mismatch")
             result["parent_fingerprint_in_manifest"] = True
         else:
-            result["parent_fingerprint_in_manifest"] = False
-        if expected_parent_model_id:
-            if manifest.get("parent_model_version_id") != expected_parent_model_id:
+            result["parent_fingerprint_in_manifest"] = bool(
+                manifest.get("parent_model_fingerprint")
+            )
+
+        if expected_parent_model_id is not None:
+            if not isinstance(expected_parent_model_id, str) or not expected_parent_model_id:
+                raise ValidationError("expected parent model id is empty")
+            actual_model_id = manifest.get("parent_model_version_id")
+            if not isinstance(actual_model_id, str) or not actual_model_id:
+                raise ValidationError("result_manifest.parent_model_version_id is missing")
+            if actual_model_id != expected_parent_model_id:
                 raise ValidationError("result_manifest.parent_model_version_id mismatch")
             result["parent_model_id_ok"] = True
+            result["parent_model_version_id"] = actual_model_id
+
+        if expected_parent_model_ids is not None:
+            # Mapping is trusted-local-id -> remote-id.  The archive stores the
+            # remote id; the local alias must be present and unambiguous.
+            if not isinstance(expected_parent_model_ids, dict) or not expected_parent_model_ids:
+                raise ValidationError("expected parent model id mapping is empty")
+            normalized: dict[str, str] = {}
+            for local, remote in expected_parent_model_ids.items():
+                if not isinstance(local, str) or not local or not isinstance(remote, str) or not remote:
+                    raise ValidationError("parent model id mapping is invalid")
+                normalized[local] = remote
+            remote_values = set(normalized.values())
+            if len(remote_values) != 1:
+                raise ValidationError("parent model id mapping has multiple remote ids")
+            mapped_remote = next(iter(remote_values))
+            if expected_parent_model_id is not None and mapped_remote != expected_parent_model_id:
+                raise ValidationError("parent model id mapping disagrees with expected remote id")
+            actual_model_id = manifest.get("parent_model_version_id")
+            if actual_model_id != mapped_remote:
+                raise ValidationError(
+                    "result_manifest.parent_model_version_id not in trusted mapping"
+                )
+            locals_for_actual = sorted(k for k, v in normalized.items() if v == actual_model_id)
+            if not locals_for_actual:
+                raise ValidationError("no trusted local id maps to archive parent id")
+            result["parent_model_ids"] = normalized
+            result["local_parent_model_ids"] = locals_for_actual
 
         if expected_classes is not None:
-            wanted = set(expected_classes) if not isinstance(expected_classes, dict) else set(expected_classes)
-            if set(classes) != wanted:
-                raise ValidationError("class_prompts.json class set mismatch")
+            if isinstance(expected_classes, dict):
+                wanted = {
+                    str(k): str(v) for k, v in expected_classes.items()
+                }
+                if classes != wanted:
+                    missing = sorted(set(wanted) - set(classes))
+                    extra = sorted(set(classes) - set(wanted))
+                    changed = sorted(
+                        name for name in set(classes) & set(wanted)
+                        if classes[name] != wanted[name]
+                    )
+                    raise ValidationError(
+                        "class_prompts.json mismatch; "
+                        f"missing={missing}, extra={extra}, changed={changed}"
+                    )
+            else:
+                wanted = set(expected_classes)
+                if set(classes) != wanted:
+                    raise ValidationError("class_prompts.json class set mismatch")
         result["classes"] = sorted(classes)
+        result["class_prompts"] = dict(classes)
 
         # Every member except file_checksums.json must be listed and hash-match.
         listed = set(checksums)

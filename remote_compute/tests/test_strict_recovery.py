@@ -50,6 +50,41 @@ def test_restart_unknown_nonterminal_does_not_mutate_or_resume(tmp_path, old_sta
         server2.stop()
 
 
+def test_strict_recovery_rejects_idempotent_attach_of_unknown_job(tmp_path):
+    """P0-1: same-key submit must not attach/register a disk-only job."""
+    data = tmp_path / 'service'
+    project = helpers.copy_example_project(tmp_path / 'project')
+    spec = packager.make_job_spec(
+        project, ['python', 'train.py'], timeout_s=120,
+        meta={'idempotency_key': 'strict-idem-key'},
+    )
+    server = helpers.ServerProcess(data_dir=data, extra_args=['--strict-recovery']).start()
+    try:
+        client, _ = rawflow.connect(server.address)
+        try:
+            first = rawflow.submit(client, spec)
+        finally:
+            client.close()
+    finally:
+        server.stop()
+    jobs_before = [p.name for p in (data / 'jobs').iterdir() if p.is_dir()]
+    assert jobs_before == [first['job_id']]
+    server2 = helpers.ServerProcess(data_dir=data, extra_args=['--strict-recovery']).start()
+    try:
+        client, _ = rawflow.connect(server2.address)
+        try:
+            # Same key + same spec: before the fix this attached the disk job,
+            # returned job_accepted, and job_start could enqueue it.
+            client.send_json({'kind': 'job_submit', 'spec': spec.to_dict()})
+            error = client.expect_error('CONFLICT')
+            assert '严格恢复' in error['message'] or '未知' in error['message']
+        finally:
+            client.close()
+        assert [p.name for p in (data / 'jobs').iterdir() if p.is_dir()] == jobs_before
+    finally:
+        server2.stop()
+
+
 def test_terminal_state_is_still_queryable_after_restart(tmp_path):
     data = tmp_path / 'service'
     project = helpers.copy_example_project(tmp_path / 'project')

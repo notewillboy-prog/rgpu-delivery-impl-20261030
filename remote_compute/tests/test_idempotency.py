@@ -12,7 +12,9 @@ import pytest
 import helpers
 import rawflow
 from client import packager
+from common.models import EnvSpec, JobSpec, Resources
 from server.idempotency import IdempotencyConflict, IdempotencyError, IdempotencyIndex
+from server.jobstore import JobStore, canonical_spec_fingerprint
 
 
 def _fp(seed: str = "a") -> str:
@@ -37,10 +39,9 @@ def test_get_or_create_only_once_concurrent(tmp_path: Path) -> None:
     created: list[str] = []
     lock = threading.Lock()
 
-    def create() -> str:
+    def create(job_id: str) -> None:
         with lock:
-            created.append("x")
-        return "job-20261030-000000-abcdef"
+            created.append(job_id)
 
     results = []
 
@@ -59,9 +60,101 @@ def test_get_or_create_only_once_concurrent(tmp_path: Path) -> None:
 
 def test_get_or_create_rejects_different_spec(tmp_path: Path) -> None:
     index = IdempotencyIndex(tmp_path / "idem")
-    index.get_or_create("k", _fp(), lambda: "job-20261030-000000-abcdef")
+    index.get_or_create("k", _fp(), lambda job_id: None)
     with pytest.raises(IdempotencyConflict):
-        index.get_or_create("k", _fp("b"), lambda: "job-20261030-000000-999999")
+        index.get_or_create("k", _fp("b"), lambda job_id: None)
+
+
+def test_crash_after_create_before_commit_does_not_duplicate(tmp_path: Path, monkeypatch) -> None:
+    """Synthetic P0-2: record fails after create; retry must reuse the id."""
+    index = IdempotencyIndex(tmp_path / "idem")
+    created: list[str] = []
+
+    def create(job_id: str) -> None:
+        created.append(job_id)
+
+    original_record = index.record
+    calls = {"n": 0}
+
+    def flaky_record(key, job_id, spec_fingerprint, *, status="committed"):
+        calls["n"] += 1
+        # First record is the reservation (must succeed).  The second record is
+        # the commit after create; fail it, simulating a crash in that window.
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash before commit")
+        return original_record(key, job_id, spec_fingerprint, status=status)
+
+    monkeypatch.setattr(index, "record", flaky_record)
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        index.get_or_create("crash-key", _fp(), create)
+    assert len(created) == 1
+    reserved = index.lookup("crash-key")
+    assert reserved is not None and reserved["status"] == "reserved"
+    assert reserved["job_id"] == created[0]
+
+    monkeypatch.setattr(index, "record", original_record)
+    job_id, reused = index.get_or_create("crash-key", _fp(), create)
+    assert job_id == created[0]
+    assert reused is False
+    # Retry calls create with the same id (idempotent repair), never a new id.
+    assert created == [job_id, job_id]
+    committed = index.lookup("crash-key")
+    assert committed is not None and committed["status"] == "committed"
+    assert committed["job_id"] == job_id
+    assert len({p.stem for p in index.root.glob("*.json")}) == 1
+
+
+def test_create_before_commit_crash_leaves_one_job_on_disk(tmp_path: Path, monkeypatch) -> None:
+    """P0-2 end-to-end at store level: retry must not create a second job dir."""
+    store = JobStore(tmp_path / "store")
+    index = IdempotencyIndex(tmp_path / "idem")
+    spec = JobSpec(
+        job_name="idempotent-crash",
+        entry_argv=["python", "x.py"],
+        env=EnvSpec(),
+        resources=Resources(timeout_s=10),
+    )
+    fingerprint = canonical_spec_fingerprint(spec)
+    original_record = index.record
+    calls = {"n": 0}
+
+    def flaky_record(key, job_id, spec_fingerprint, *, status="committed"):
+        calls["n"] += 1
+        if calls["n"] == 2:
+            raise RuntimeError("simulated crash before commit")
+        return original_record(key, job_id, spec_fingerprint, status=status)
+
+    def create(job_id: str) -> None:
+        store.create_job(spec, job_id=job_id)
+
+    monkeypatch.setattr(index, "record", flaky_record)
+    with pytest.raises(RuntimeError):
+        index.get_or_create("crash-key", fingerprint, create)
+    jobs_after_crash = sorted(p.name for p in store.jobs_dir.iterdir() if p.is_dir())
+    assert len(jobs_after_crash) == 1
+
+    monkeypatch.setattr(index, "record", original_record)
+    job_id, reused = index.get_or_create("crash-key", fingerprint, create)
+    assert reused is False
+    assert job_id == jobs_after_crash[0]
+    assert sorted(p.name for p in store.jobs_dir.iterdir() if p.is_dir()) == jobs_after_crash
+    assert index.lookup("crash-key")["status"] == "committed"
+
+
+def test_reserved_without_create_is_repaired_with_same_id(tmp_path: Path) -> None:
+    """Synthetic P0-2: crash before create; retry creates the reserved id."""
+    index = IdempotencyIndex(tmp_path / "idem")
+    index.record("reserved-key", "job-20261030-000000-abcdef", _fp(), status="reserved")
+    created: list[str] = []
+
+    def create(job_id: str) -> None:
+        created.append(job_id)
+
+    job_id, reused = index.get_or_create("reserved-key", _fp(), create)
+    assert job_id == "job-20261030-000000-abcdef"
+    assert reused is False
+    assert created == [job_id]
+    assert index.lookup("reserved-key")["status"] == "committed"
 
 
 def test_corrupt_or_tampered_record_is_rejected(tmp_path: Path) -> None:

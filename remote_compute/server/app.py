@@ -332,12 +332,14 @@ class Session:
         elif idem_key:
             fingerprint = canonical_spec_fingerprint(spec)
             try:
-                job_id, reused = self.app.idempotency.get_or_create(
+                job_id, reused, created_here = self.app.idempotency.get_or_create_with_state(
                     idem_key,
                     fingerprint,
-                    lambda: self.app.store.create_job(spec)[0],
+                    lambda reserved_id: self.app.store.create_job(spec, job_id=reserved_id),
                 )
-                runtime = self.app.attach_runtime(job_id, fingerprint)
+                runtime = self.app.attach_runtime(
+                    job_id, fingerprint, created_here=created_here
+                )
             except IdempotencyConflict as exc:
                 raise ProtocolError(str(exc), ERR_CONFLICT) from exc
             except ValueError as exc:
@@ -812,8 +814,19 @@ class ServerApp:
         runtime = JobRuntime(self.store, job_id, spec, state)
         return self._register_runtime(runtime)
 
-    def attach_runtime(self, job_id: str, spec_fingerprint: str) -> JobRuntime:
-        """Attach to an existing job by idempotency key, including terminal jobs."""
+    def attach_runtime(
+        self,
+        job_id: str,
+        spec_fingerprint: str,
+        *,
+        created_here: bool = False,
+    ) -> JobRuntime:
+        """Attach to an existing job by idempotency key, including terminal jobs.
+
+        ``created_here`` may be set only by the idempotency create path for a
+        job this process just created (including a repaired fresh reservation).
+        It must never be set from client-controlled input.
+        """
         self.require_job_exists(job_id)
         state = self.store.load_state(job_id)
         stored = str(state.get("spec_fingerprint") or "")
@@ -824,6 +837,21 @@ class ServerApp:
         runtime = self.find_runtime(job_id)
         if runtime is not None:
             return runtime
+        # Idempotency attach is a recovery entry too.  Under strict recovery a
+        # job that exists only on disk has unknown execution provenance; it must
+        # not be silently re-registered and made runnable through job_start.
+        # Terminal jobs are safe to attach: they are only queried/downloaded and
+        # can never be enqueued again.
+        if (
+            self.config.strict_recovery
+            and not created_here
+            and str(state.get("state") or "") not in _TERMINAL_STATES
+        ):
+            raise ProtocolError(
+                "服务进程内没有此作业的运行记录；原进程及执行状态未知，"
+                "严格恢复模式禁止 attach/重投，请核查原任务",
+                ERR_CONFLICT,
+            )
         try:
             spec = self.store.load_spec(job_id)
         except JobStoreError as exc:

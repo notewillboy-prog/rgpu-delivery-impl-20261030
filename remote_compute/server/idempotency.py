@@ -3,17 +3,20 @@
 One JSON record per key::
 
     <data_dir>/idempotency/<sha256(key)>.json
-    {"key": ..., "job_id": ..., "spec_fingerprint": ..., "created_at": ...}
+    {"key": ..., "job_id": ..., "spec_fingerprint": ...,
+     "status": "reserved" | "committed", "created_at": ...}
 
-The index is deliberately small: it does not own job state, it only maps a
-caller-supplied key to the already-created job.  ``get_or_create`` holds a
-per-key lock (thread + cross-process) across lookup/create/record, so two
-concurrent submissions of the same key create at most one job in one process.
+The index is deliberately small: it does not own job state, it maps a
+caller-supplied key to a stable job id.  ``get_or_create`` holds a per-key lock
+(thread + cross-process) across reserve/create/commit, so concurrent
+submissions of the same key create at most one job.
 
-Crash window: if the process dies after ``create_job`` but before ``record``,
-a retry cannot see the orphaned job and will create a second one.  Keep the
-window small; callers should use a durable client receipt in addition to this
-index.  A future version can reserve the job id before creating the directory.
+Crash safety: the job id is written to the index **before** the job directory
+is created.  If the process dies after the reservation, a retry sees the
+reserved id, asks the caller to create/repair that exact id idempotently, and
+then commits the record.  A crash after create but before commit is healed the
+same way.  The index therefore never silently creates a second job for one key;
+an interrupted reservation is visible as ``status="reserved"`` for operators.
 """
 
 from __future__ import annotations
@@ -22,6 +25,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import threading
 import time
 from contextlib import contextmanager
@@ -49,6 +53,18 @@ def _atomic_write(path: Path, payload: Dict[str, Any]) -> None:
         stream.flush()
         os.fsync(stream.fileno())
     os.replace(tmp, path)
+    # Make the rename durable.  Without this a crash/power loss can lose the
+    # reservation even though the file was renamed, reopening the duplicate
+    # create window on some filesystems.
+    if os.name != "nt":
+        try:
+            dir_fd = os.open(str(path.parent), os.O_RDONLY)
+            try:
+                os.fsync(dir_fd)
+            finally:
+                os.close(dir_fd)
+        except OSError:
+            pass
 
 
 @contextmanager
@@ -128,30 +144,57 @@ class IdempotencyIndex:
             raise IdempotencyError("idempotency record job_id is invalid")
         if not isinstance(data.get("spec_fingerprint"), str) or not _SHA_RE.fullmatch(data["spec_fingerprint"]):
             raise IdempotencyError("idempotency record spec fingerprint is invalid")
+        status = data.get("status", "committed")
+        if status not in ("reserved", "committed"):
+            raise IdempotencyError("idempotency record status is invalid")
+        data["status"] = status
         return data
 
-    def record(self, key: str, job_id: str, spec_fingerprint: str) -> Dict[str, Any]:
+    def record(
+        self,
+        key: str,
+        job_id: str,
+        spec_fingerprint: str,
+        *,
+        status: str = "committed",
+    ) -> Dict[str, Any]:
         key = self.validate_key(key)
         if not isinstance(job_id, str) or not _JOB_RE.fullmatch(job_id):
             raise ValueError("invalid job id")
         if not isinstance(spec_fingerprint, str) or not _SHA_RE.fullmatch(spec_fingerprint):
             raise ValueError("invalid spec fingerprint")
+        if status not in ("reserved", "committed"):
+            raise ValueError("invalid idempotency status")
         payload = {
             "key": key,
             "job_id": job_id,
             "spec_fingerprint": spec_fingerprint,
+            "status": status,
             "created_at": time.time(),
         }
         _atomic_write(self.record_path(key), payload)
         return payload
 
-    def get_or_create(
+    @staticmethod
+    def _new_job_id() -> str:
+        """Generate a job-id-shaped value without touching the job store."""
+        return time.strftime("job-%Y%m%d-%H%M%S") + "-" + secrets.token_hex(3)
+
+    def get_or_create_with_state(
         self,
         key: str,
         spec_fingerprint: str,
-        create: Callable[[], str],
-    ) -> Tuple[str, bool]:
-        """Return ``(job_id, reused)``; create at most once per key in-process."""
+        create: Callable[[str], Any],
+        *,
+        new_job_id: Optional[Callable[[], str]] = None,
+    ) -> Tuple[str, bool, bool]:
+        """Return ``(job_id, reused, created_here)``.
+
+        ``created_here`` is true only for a brand-new reservation created by
+        this call.  A reservation left by a crashed process is repaired with
+        the same id, but ``created_here`` stays false, so strict recovery can
+        still refuse to make that unknown on-disk job runnable.
+        """
         key = self.validate_key(key)
         if not isinstance(spec_fingerprint, str) or not _SHA_RE.fullmatch(spec_fingerprint):
             raise ValueError("invalid spec fingerprint")
@@ -162,14 +205,45 @@ class IdempotencyIndex:
                     raise IdempotencyConflict(
                         "idempotency key already used for a different spec"
                     )
-                return existing["job_id"], True
-            job_id = str(create())
+                job_id = existing["job_id"]
+                if existing["status"] == "committed":
+                    return job_id, True, False
+                # Reserved but not committed: the previous attempt may have
+                # crashed before or after creating the directory.  Repair with
+                # the SAME id, then commit.  No second id can be generated.
+                create(job_id)
+                self.record(key, job_id, spec_fingerprint, status="committed")
+                return job_id, False, False
+
+            factory = new_job_id or self._new_job_id
+            job_id = str(factory())
             if not _JOB_RE.fullmatch(job_id):
-                raise IdempotencyError("created job id is invalid")
-            # Record while still holding the key lock.  A crash between create
-            # and record leaves an orphan; documented in the module docstring.
-            self.record(key, job_id, spec_fingerprint)
-            return job_id, False
+                raise IdempotencyError("generated job id is invalid")
+            # Persist the id before creating anything.  If we die now, a retry
+            # finds this reservation and creates exactly this id.
+            self.record(key, job_id, spec_fingerprint, status="reserved")
+            try:
+                create(job_id)
+            except BaseException:
+                # Keep the reservation: a retry must use the same id.  Removing
+                # it here would let a partially-created job be duplicated.
+                raise
+            self.record(key, job_id, spec_fingerprint, status="committed")
+            return job_id, False, True
+
+    def get_or_create(
+        self,
+        key: str,
+        spec_fingerprint: str,
+        create: Callable[[str], Any],
+        *,
+        new_job_id: Optional[Callable[[], str]] = None,
+    ) -> Tuple[str, bool]:
+        """Return ``(job_id, reused)``; compatibility wrapper."""
+        job_id, reused, _created_here = self.get_or_create_with_state(
+            key, spec_fingerprint, create, new_job_id=new_job_id
+        )
+        return job_id, reused
 
 
 __all__ = [

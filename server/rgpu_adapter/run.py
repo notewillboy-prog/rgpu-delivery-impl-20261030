@@ -91,6 +91,7 @@ class Deps:
     artifacts: Any
     family_package: Any
     settings: Any
+    parent_binding: Any
 
 
 class RealDeps:
@@ -158,11 +159,79 @@ class RealDeps:
         return assets.find_root(root / "prepared_runtime" / "approved_base", "config.json")
 
     def classes(self, root: Path) -> dict:
+        """Derive the final class->prompt map from the trusted request.
+
+        The worker starts from ``parent_classes`` and merges every
+        ``training.class_prompts`` entry into it.  Validating only
+        ``parent_classes`` rejects a legitimate new class and accepts a request
+        whose prompt conflicts with the parent.  This method builds exactly the
+        worker's final map and rejects duplicate/conflicting prompts.
+        """
         request = json.loads((root / "request.json").read_text(encoding="utf-8"))
-        classes = request.get("parent_classes")
-        if not isinstance(classes, dict):
+        parent = request.get("parent_classes")
+        if not isinstance(parent, dict):
             raise ValueError("request.parent_classes is missing")
-        return classes
+        if any(
+            not isinstance(name, str) or not name.strip()
+            or not isinstance(prompt, str) or not prompt.strip()
+            for name, prompt in parent.items()
+        ):
+            raise ValueError("request.parent_classes has an invalid class/prompt")
+        training = request.get("training")
+        if not isinstance(training, dict):
+            raise ValueError("request.training is missing")
+        prompts = training.get("class_prompts")
+        if not isinstance(prompts, list):
+            raise ValueError("request.training.class_prompts is missing")
+        expected = dict(parent)
+        for item in prompts:
+            if not isinstance(item, dict):
+                raise ValueError("class_prompts entry is not an object")
+            name = item.get("class_name")
+            prompt = item.get("prompt")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError("class_prompts class_name is invalid")
+            if not isinstance(prompt, str) or not prompt.strip():
+                raise ValueError("class_prompts prompt is invalid")
+            if name in expected and expected[name] != prompt:
+                raise ValueError(
+                    f"new-class prompt conflicts with parent class: {name!r}"
+                )
+            expected[name] = prompt
+        if not expected:
+            raise ValueError("request binds no parent or new classes")
+        return expected
+
+    def parent_binding(self, root: Path, prepared: dict) -> dict:
+        """Return a trusted local->remote parent-id mapping.
+
+        The local id MUST come from the trusted request as
+        ``parent_model_id`` or ``parent_model.id``.  The remote id comes from
+        the prepare receipt and must be non-empty.  Missing either identity is
+        rejected: falling back to the remote id would pretend a local parent
+        version exists when it was never bound.
+        """
+        request = json.loads((root / "request.json").read_text(encoding="utf-8"))
+        remote = prepared.get("remote_parent_model_id")
+        if not isinstance(remote, str) or not remote.strip():
+            raise ValueError("prepared remote_parent_model_id is missing")
+        local = request.get("parent_model_id")
+        parent_model = request.get("parent_model")
+        if not local and isinstance(parent_model, dict):
+            local = parent_model.get("id") or parent_model.get("model_version_id")
+        if not isinstance(local, str) or not local.strip():
+            raise ValueError("trusted local parent id is missing")
+        request_fp = request.get("parent_fingerprint")
+        prepared_fp = prepared.get("parent_fingerprint")
+        if not isinstance(request_fp, str) or not request_fp:
+            raise ValueError("request.parent_fingerprint is missing")
+        if request_fp != prepared_fp:
+            raise ValueError("request/prepare parent fingerprint mismatch")
+        return {
+            "local_parent_model_id": local,
+            "remote_parent_model_id": remote,
+            "parent_model_ids": {local: remote},
+        }
 
     def artifacts(self, store, job: dict) -> dict:
         value = job.get("artifacts")
@@ -223,6 +292,7 @@ def execute(
         artifacts=RealDeps(root).artifacts,
         family_package=RealDeps(root).family_package,
         settings=RealDeps(root).settings,
+        parent_binding=RealDeps(root).parent_binding,
     )
     prepared: Optional[dict] = None
     try:
@@ -234,6 +304,7 @@ def execute(
         if job.get("state") not in ("QUEUED", "VALIDATING"):
             raise ValueError(f"prepared job is not runnable: {job.get('state')!r}")
         family = str(prepared["family"])
+        parent_binding = deps.parent_binding(root, prepared)
         package = deps.family_package(family)
         config = deps.settings(family)
         config["root"] = store.root
@@ -274,8 +345,9 @@ def execute(
             weights_path,
             family=family,
             expected_parent_fingerprint=str(prepared["parent_fingerprint"]),
-            expected_parent_model_id=str(prepared["remote_parent_model_id"]),
-            expected_classes=set(expected_classes),
+            expected_parent_model_id=str(parent_binding["remote_parent_model_id"]),
+            expected_parent_model_ids=dict(parent_binding["parent_model_ids"]),
+            expected_classes=dict(expected_classes),
         )
         receipt = {
             "schema": 1,
@@ -288,6 +360,9 @@ def execute(
             "bundle_manifest_sha256": prepared["bundle_manifest_sha256"],
             "parent_fingerprint": prepared["parent_fingerprint"],
             "remote_parent_model_id": prepared["remote_parent_model_id"],
+            "local_parent_model_id": parent_binding["local_parent_model_id"],
+            "parent_model_ids": parent_binding["parent_model_ids"],
+            "expected_classes": dict(expected_classes),
             "weights": {
                 "path": str(weights_path),
                 "sha256": weights.get("sha256") or _sha256(weights_path),
