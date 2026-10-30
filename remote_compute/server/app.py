@@ -723,6 +723,13 @@ class ServerApp:
     def serve_forever(self) -> None:
         if self._listener is None:
             self.bind()
+        if self.config.recover_interrupted and not self.config.strict_recovery:
+            recovered = self.store.recover_interrupted()
+            if recovered:
+                self.log(
+                    f"[server] 启动时把 {len(recovered)} 个非终态作业标为 FAILED（不自动重跑）: "
+                    + ", ".join(recovered[:5])
+                )
         self.scheduler.start()
         self.print_ready()
         try:

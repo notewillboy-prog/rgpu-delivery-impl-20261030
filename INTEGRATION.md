@@ -15,7 +15,7 @@ python -m server.main serve \
   --weight-cache-bytes 322122547200
 ```
 
-`--weight-cache-bytes` 为 0 时行为与旧版完全一致；启用后缓存位于 `<data-dir>/weights-cache`，索引位于 `<data-dir>/idempotency`。
+`--weight-cache-bytes` 为 0 时行为与旧版完全一致；启用后缓存位于 `<data-dir>/weights-cache`，索引位于 `<data-dir>/idempotency`。默认启动会把上次遗留的非终态作业标 `FAILED`（不自动重跑）；要保留“归属不明”语义用 `--strict-recovery`。
 
 ### 1.2 客户端携带 idempotency key
 

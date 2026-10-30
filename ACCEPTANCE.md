@@ -18,7 +18,7 @@ $env:PYTHONUTF8='1'; $env:PYTHONDONTWRITEBYTECODE='1'
 & D:\auto_label_workbench\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
-期望：**224 passed, 1 skipped, 110 subtests passed**。跳过项是既有的可选 E2E 开关，不是失败。
+期望：**225 passed, 1 skipped, 110 subtests passed**。跳过项是既有的可选 E2E 开关，不是失败。
 
 ## L2 本地真服务端 + 缓存/幂等 E2E（已完成）
 
@@ -88,7 +88,7 @@ python -m client.main submit <locate-project> --server 127.0.0.1:18813 \
 1. 先 Locate 1 step，再 SAM3 1 step；两个 family 使用各自的 venv（3.11/cu118、3.12/cu126）。
 2. 第二次提交同数据：`cache_hits` 覆盖输入，上传字节为 0。
 3. 上传中途 kill 客户端 → 重连带 `resume_job_id` → `received` 从断点继续 → 最终 `weights.zip` SHA 一致。
-4. 服务端重启 → `--strict-recovery` 下未完成作业只能查、不能自动重跑；终态作业仍可 `job_status`。
+4. 服务端重启 → 默认启动恢复把非终态作业标 `FAILED`（`log_tail/error` 有原因、不自动重跑）；`--strict-recovery` 下未完成作业只能查、不能自动重跑；终态作业仍可 `job_status`。
 5. 全程保留 `nvidia-smi` 前后快照和 8765 `systemctl show` 时间戳，证明未占用/未重启。
 
 ## 不能作为验收的东西

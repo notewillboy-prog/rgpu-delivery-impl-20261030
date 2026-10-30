@@ -117,6 +117,7 @@ class ServerConfig:
     enable_docker: bool = False
     strict_gpu: bool = False
     strict_recovery: bool = False
+    recover_interrupted: bool = True
     min_gpu_free_mb: int = 16384
     weight_cache_bytes: int = 0
     max_upload_bytes: int = 50 * 1024 ** 3   # 50 GiB
@@ -168,6 +169,7 @@ def server_config_from_args(args: Any) -> ServerConfig:
         enable_docker=bool(args.enable_docker),
         strict_gpu=bool(getattr(args, 'strict_gpu', False)),
         strict_recovery=bool(getattr(args, 'strict_recovery', False)),
+        recover_interrupted=bool(getattr(args, 'recover_interrupted', True)),
         min_gpu_free_mb=int(getattr(args, 'min_gpu_free_mb', 16384)),
         weight_cache_bytes=max(0, int(getattr(args, 'weight_cache_bytes', 0) or 0)),
         idle_timeout_s=int(args.idle_timeout),
@@ -185,6 +187,7 @@ def server_config_to_dict(cfg: ServerConfig) -> Dict[str, Any]:
         "enable_docker": cfg.enable_docker,
         "strict_gpu": cfg.strict_gpu,
         "strict_recovery": cfg.strict_recovery,
+        "recover_interrupted": cfg.recover_interrupted,
         "min_gpu_free_mb": cfg.min_gpu_free_mb,
         "weight_cache_bytes": cfg.weight_cache_bytes,
         "max_upload_bytes": cfg.max_upload_bytes,

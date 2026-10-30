@@ -16,6 +16,7 @@
 | 真实执行入口 | `run.py`：调用 prepare → worker → 校验 weights.zip → 写 receipt | `server/rgpu_adapter/run.py` |
 | 产物校验 | `weights_validate.py`：ZIP 路径/CRC/checksum/权重指纹/父指纹/质量口径 | `server/rgpu_adapter/weights_validate.py` |
 | 状态可观测 | `updated_at/log_tail/error/gpus` 出现在 `job_status` | `server/runtime.py`、`server/jobstore.py` |
+| 启动恢复 | 非终态作业标 `FAILED`、写 `error/log_tail`，不自动重跑；`--strict-recovery` 时跳过 | `server/jobstore.py:recover_interrupted`、`server/app.py` |
 
 ## 2. 测试
 
@@ -25,7 +26,7 @@ $env:PYTHONUTF8='1'; $env:PYTHONDONTWRITEBYTECODE='1'
 & D:\auto_label_workbench\.venv\Scripts\python.exe -m pytest tests -q -p no:cacheprovider
 ```
 
-结果：**224 passed, 1 skipped, 110 subtests passed**（2026-10-30 实测，Windows CPU）。
+结果：**225 passed, 1 skipped, 110 subtests passed**（2026-10-30 实测，Windows CPU）。
 
 新增覆盖：
 
@@ -38,6 +39,7 @@ $env:PYTHONUTF8='1'; $env:PYTHONDONTWRITEBYTECODE='1'
 - `tests/test_receipt_wiring.py`：第一次提交成功、第二次无网络动作即拒绝。
 - `tests/test_run_adapter.py`：`run.py` 成功/失败/二次执行/校验失败四条路径。
 - `tests/test_status_payload.py`：状态诊断字段。
+- `tests/test_recovery_startup.py`：启动恢复只标非终态、终态不动、二次调用幂等。
 
 ## 3. 仍未完成（真实 GPU 前必须知道）
 

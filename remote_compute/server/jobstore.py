@@ -374,6 +374,37 @@ class JobStore:
             removed.append(job_id)
         return removed
 
+    def recover_interrupted(
+        self,
+        reason: str = "服务进程重启，原执行状态未知；未自动重跑，请人工核查",
+    ) -> List[str]:
+        """Mark non-terminal jobs found on disk as FAILED; never auto-runs."""
+        recovered: List[str] = []
+        for job_id in self.list_job_ids():
+            try:
+                state = self.load_state(job_id)
+            except JobStoreError:
+                continue
+            if str(state.get("state") or "") in (
+                JobState.SUCCEEDED.value,
+                JobState.FAILED.value,
+                JobState.TIMEOUT.value,
+                JobState.CANCELLED.value,
+            ):
+                continue
+            now = time.time()
+            tail = list(state.get("log_tail") or [])[-19:] + [f"[server] {reason}"]
+            self.update_state(
+                job_id,
+                state=JobState.FAILED.value,
+                error=reason,
+                finished_at=now,
+                log_tail=tail,
+            )
+            self.append_log(job_id, f"\n[server] {reason}\n")
+            recovered.append(job_id)
+        return recovered
+
 
 __all__ = [
     "JobStore",

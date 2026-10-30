@@ -70,6 +70,9 @@ def build_parser() -> argparse.ArgumentParser:
                        help="GPU 作业必须获得空闲且满足显存要求的 GPU，失败时不使用 CPU")
     serve.add_argument("--strict-recovery", action="store_true",
                        help="重启后拒绝自动恢复归属不明的未完成作业，需人工核查")
+    serve.add_argument("--no-recover-interrupted", dest="recover_interrupted",
+                       action="store_false", default=True,
+                       help="启动时不要把磁盘上的非终态作业标为 FAILED（默认会标，且不自动重跑）")
     serve.add_argument("--min-gpu-free-mb", type=int, default=16384,
                        help="严格 GPU 模式的每卡最低空闲显存 MiB（默认 16384）")
     serve.add_argument("--weight-cache-bytes", type=int, default=0,
