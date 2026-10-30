@@ -1,0 +1,6 @@
+# 本示例只用 Python 标准库，没有第三方依赖。
+# 这个文件保留为「依赖清单」示例：
+#   - 客户端自动识别它 → common.hashing.normalize_requirements 归一化 → env.fingerprint
+#   - 服务端按指纹复用/重建环境；注释与空行不会影响指纹
+# 如需演示环境重建，可追加形如下面的依赖行（本 demo 不实际安装）：
+#   # numpy==2.1.0

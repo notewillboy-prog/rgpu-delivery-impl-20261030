@@ -1,0 +1,36 @@
+[Unit]
+# RGPU 远程算力调度服务端（模板）
+# - 路径 /opt/rgpu-server、/var/lib/rgpu、端口 8765 会被 deploy/install_server.sh
+#   用 sed 替换成实际值。
+# - token 等运行参数来自 /etc/rgpu/server.env（由安装脚本生成，权限 640）。
+Description=RGPU remote compute scheduling server
+Documentation=file:///opt/rgpu-server/deploy/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=rgpu
+Group=rgpu
+WorkingDirectory=/opt/rgpu-server
+EnvironmentFile=-/etc/rgpu/server.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONIOENCODING=utf-8
+Environment=PYTHONDONTWRITEBYTECODE=1
+# RGPU_EXTRA_ARGS 只从 /etc/rgpu/server.env 读取（EnvironmentFile 覆盖 Environment=）；
+# 该文件缺失/没有这个变量时，下面的 $RGPU_EXTRA_ARGS 展开为「无参数」。
+ExecStart=/opt/rgpu-server/.venv/bin/python -m server.main serve --host 0.0.0.0 --port 8765 --data-dir /var/lib/rgpu --max-parallel 1 $RGPU_EXTRA_ARGS
+Restart=on-failure
+RestartSec=3
+# 停止时先给主进程 SIGTERM（server 会 terminate 作业子进程），20s 后强杀
+KillMode=mixed
+TimeoutStopSec=20
+
+# 可选加固（demo 默认关闭：作业进程本身不受这些限制，按需开启）
+# NoNewPrivileges=yes
+# PrivateTmp=yes
+# ProtectSystem=full
+# ReadWritePaths=/var/lib/rgpu
+
+[Install]
+WantedBy=multi-user.target

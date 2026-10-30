@@ -1,0 +1,8 @@
+{
+  "w": 1.2,
+  "b": 0.5,
+  "runs": 0,
+  "epochs_total": 0,
+  "demo": "incremental_train",
+  "note": "基座模型初始权重；训练脚本读取它继续训练，并就地更新"
+}
