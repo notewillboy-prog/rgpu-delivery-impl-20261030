@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "reason": "real workers did not emit result_manifest.parent_model_fingerprint; validator correctly rejects that ZIP",
+  "patched_at": "2026-10-30T18:50:42+08:00",
+  "files": {
+    "training_service": {
+      "upstream": "D:\\auto_label_workbench\\server\\training_service\\worker.py",
+      "upstream_sha256": "4742ad8c99fa205070d04cf89c1b4c12ce57d37503f3fb537984397b1e356ccd",
+      "patched": "D:\\auto_label_workbench\\work\\rgpu_delivery_impl_20261030\\vendor\\rgpu_worker_patch\\training_service\\worker.py",
+      "patched_sha256": "15b13ead72bc7ca9d2e0012c9904df07724f9713368f5a24dd279a9248fd3005",
+      "added_fields": [
+        "result_manifest.parent_model_fingerprint",
+        "external version.parent_model_fingerprint"
+      ]
+    },
+    "sam3_training_service": {
+      "upstream": "D:\\auto_label_workbench\\server\\sam3_training_service\\worker.py",
+      "upstream_sha256": "8afc1583ce7544410ebbe40dd8dc9b21ab8714329cfa74bc4036e7081046d9e3",
+      "patched": "D:\\auto_label_workbench\\work\\rgpu_delivery_impl_20261030\\vendor\\rgpu_worker_patch\\sam3_training_service\\worker.py",
+      "patched_sha256": "b463e6616e948bd23eec84af4999afb4019afea1f1ef259003422e70988e63bb",
+      "added_fields": [
+        "result_manifest.parent_model_fingerprint",
+        "external version.parent_model_fingerprint"
+      ]
+    }
+  }
+}

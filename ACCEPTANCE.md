@@ -117,3 +117,11 @@ python -m client.main submit <locate-project> --server 127.0.0.1:18813 \
 - audit selftest 增加 bundle_manifest 缺失 FAIL 用例，14/14；build helper 5 项通过。
 - 全量 **247 passed, 1 skipped, 110 subtests passed**；定向 **38 passed**。
 - 仍未部署/未训练；历史 locate bundle-binding FAIL 不变。
+
+## 2026-10-30 真实 worker 生产者修复
+
+- 根因：真实 `worker.py:88-93` 不写 `parent_model_fingerprint`，新 validator 必拒；FakeDeps 合成 ZIP 掩盖。
+- 修复：独立 vendor 副本两家族 worker 均从已校验父指纹写入 ZIP 内 `result_manifest` 与 ZIP 外 `version`；validator 不放宽。
+- 回归：真实 worker + FakeEngine 离线 E2E 9 passed；全量 256 passed / 1 skipped / 110 subtests；定向 47 passed。
+- 新 bundle（gpu-server，未消费）：locate manifest `be32fd0e...` / worker `15b13ead...`；sam3 manifest `d1c55af6...` / worker `b463e661...`。
+- 未启动服务/训练/部署；候选仍 `needs_review`；完整 gpu-client→RGPU 闭环未完成。
