@@ -278,9 +278,12 @@ def test_real_worker_zip_binds_parent_and_validates(
     with __import__("zipfile").ZipFile(archive) as value:
         manifest = json.loads(value.read("result_manifest.json"))
         checksums = json.loads(value.read("file_checksums.json"))
+        source_manifest = json.loads(value.read("source_manifest.json"))
         assert "result_manifest.json" in checksums
         assert checksums["result_manifest.json"] == _sha(
             job_dir / "result_manifest.json")
+        assert source_manifest["worker.py"] == _sha(
+            VENDOR / FAMILIES[family] / "worker.py")
     assert manifest["parent_model_fingerprint"] == PARENT_FP
     assert manifest["parent_model_version_id"] == REMOTE_ID
     assert any(
