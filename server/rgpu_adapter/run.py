@@ -32,6 +32,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+# ``python -I`` implies ``-P`` on Python >=3.11 (script directory is not added
+# to sys.path).  Keep the entry isolated but import the sibling validator.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 try:
     from . import weights_validate
 except ImportError:  # script execution: ``python run.py``
@@ -135,8 +139,8 @@ class RealDeps:
         return store.job(job_id)
 
     def run_job(self, store, job: dict, config: dict) -> None:
-        package = self.family_package(job.get("_family") or self._family_from_job(store, job))
-        _package, _core, worker, _assets = self._modules(package)
+        family = job.get("_family") or self._family_from_job(store, job)
+        _package, _core, worker, _assets = self._modules(family)
         worker.run_job(store, job, config)
 
     def _family_from_job(self, store, job: dict) -> str:
@@ -172,8 +176,8 @@ class RealDeps:
                 result[name] = {"path": str(path), "sha256": _sha256(path), "size": path.stat().st_size}
         return result
 
-    def settings(self) -> dict:
-        package = "training_service"
+    def settings(self, family: str = "locate") -> dict:
+        package = self.family_package(family)
         for item in (str(self.server), str(self.server / "vendor_sam3")):
             if item not in sys.path:
                 sys.path.insert(0, item)
@@ -231,7 +235,7 @@ def execute(
             raise ValueError(f"prepared job is not runnable: {job.get('state')!r}")
         family = str(prepared["family"])
         package = deps.family_package(family)
-        config = deps.settings()
+        config = deps.settings(family)
         config["root"] = store.root
         config["base"] = deps.base_path(root, prepared)
         config["gpu"] = os.environ.get("INCREMENTAL_GPU") or os.environ.get("CUDA_VISIBLE_DEVICES") or config.get("gpu", "0")
@@ -240,7 +244,9 @@ def execute(
         if physical not in {"0", "1"}:
             raise ValueError(f"GPU 必须映射到物理 0/1，当前 {config['gpu']!r}")
         previous_gpu = os.environ.get("INCREMENTAL_GPU")
+        previous_cuda = os.environ.get("CUDA_VISIBLE_DEVICES")
         os.environ["INCREMENTAL_GPU"] = physical
+        os.environ["CUDA_VISIBLE_DEVICES"] = physical
         try:
             deps.run_job(store, job, config)
         finally:
@@ -248,6 +254,10 @@ def execute(
                 os.environ.pop("INCREMENTAL_GPU", None)
             else:
                 os.environ["INCREMENTAL_GPU"] = previous_gpu
+            if previous_cuda is None:
+                os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+            else:
+                os.environ["CUDA_VISIBLE_DEVICES"] = previous_cuda
         job = deps.load_job(store, prepared["job_id"])
         _copy_logs(store, job, root)
         if job.get("state") != "COMPLETED":

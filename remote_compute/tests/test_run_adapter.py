@@ -115,7 +115,7 @@ class FakeDeps:
     def family_package(self, _family: str) -> str:
         return "training_service"
 
-    def settings(self) -> dict:
+    def settings(self, _family: str = "locate") -> dict:
         return {"root": self.root, "base": self.root, "gpu": "0"}
 
 

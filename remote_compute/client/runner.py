@@ -919,6 +919,13 @@ def build_spec(options: SubmitOptions, callbacks: Optional[Callbacks] = None) ->
     else:
         meta = {}
 
+    # A stable caller-supplied request id doubles as the server-side
+    # idempotency key: retrying the same submit must attach to the original
+    # job instead of creating a second one.
+    if options.receipt_request_id:
+        meta = dict(meta or {})
+        meta["idempotency_key"] = str(options.receipt_request_id)
+
     def on_warning(message: str) -> None:
         cb.log(f"[打包] {message}")
 

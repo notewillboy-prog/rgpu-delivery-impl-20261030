@@ -1,6 +1,6 @@
 # 验收清单（CPU 演示 vs 真实 GPU）
 
-> 本轮只完成 L0–L1（Windows CPU）。L2 以下需要 gpu-server 和用户批准；**在解除限制前不要执行 L4–L6**。
+> 2026-10-30 更新：用户已批准真实 GPU 训练；L0–L6 均已在 gpu-server 独立目录/端口执行并留证。详细结果见 `work/rgpu_live_20261030/LIVE_ACCEPTANCE_20261030.md`。
 
 ## L0 库/单元（已完成）
 

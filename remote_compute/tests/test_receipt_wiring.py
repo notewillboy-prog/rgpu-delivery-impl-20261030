@@ -6,7 +6,7 @@ import json
 from pathlib import Path
 
 from client.durable_receipt import DurableReceipt
-from client.runner import Callbacks, JobRunner
+from client.runner import Callbacks, JobRunner, SubmitOptions, build_spec
 from common.config import ClientConfig
 from common.models import EnvSpec, JobSpec, Resources
 
@@ -61,3 +61,21 @@ def test_receipt_allows_one_submit_and_refuses_retry(tmp_path: Path) -> None:
     assert second.ok is False
     assert second.client_exit == 4
     assert conn2.sent == []
+
+
+def test_request_id_becomes_idempotency_key(tmp_path: Path) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "train.py").write_text("print('ok')\n", encoding="utf-8")
+    (project / "model.json").write_text('{"w": 0}\n', encoding="utf-8")
+    (project / "data.csv").write_text("x,y\n1,2\n", encoding="utf-8")
+    options = SubmitOptions(
+        project_dir=str(project),
+        entry="python train.py",
+        incremental=True,
+        receipt_request_id="stable-request-1",
+    )
+    spec = build_spec(options)
+    assert spec.meta["idempotency_key"] == "stable-request-1"
+    plain = build_spec(SubmitOptions(project_dir=str(project), entry="python train.py"))
+    assert "idempotency_key" not in plain.meta
