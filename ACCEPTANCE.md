@@ -102,10 +102,18 @@ python -m client.main submit <locate-project> --server 127.0.0.1:18813 \
 
 - **strict_recovery 旁路**：`attach_runtime` 现在也受 strict_recovery 约束；进程内未知的非终态磁盘作业拒绝 attach，只有本进程刚通过幂等路径创建的作业可用 `created_here=True` 注册。回归：`tests/test_strict_recovery_bypass.py`、`tests/test_strict_recovery.py`（wire 同 key 重启后 CONFLICT）。
 - **幂等崩溃窗**：`IdempotencyIndex` 先持久化 `reserved` job_id，再以该 id 创建，再写 `committed`；重试只修复同一 id，不再 create 第二个 job。`JobStore.create_job(spec, job_id=...)` 支持显式 id 且 spec 冲突拒绝。回归：`tests/test_idempotency.py`（磁盘 job 目录始终 1）。
-- **新类别误拒**：`run.py RealDeps.classes()` 合并父类与 `training.class_prompts`；`weights_validate.py` 比较完整 class->prompt 映射。回归覆盖两家族 base 空类/新增类/同类。
+- **新类别误拒**：`run.py RealDeps.classes()` 合并父类与 `training.class_prompts`；`weights_validate.py` 比较完整 class->prompt 映射。回归覆盖两家族 base 空类/新增类/同类，以及 replay 旧类合并、重复类名、new_only 携带 replay 提示词拒绝。
 - **父指纹/父 ID**：`run.py` 构造 local->remote 映射并写入 receipt；`weights_validate.py` 在指定 expected 时拒绝缺失/空/非法指纹，并校验映射。历史产物不补字段。
 - **bundle 绑定**：`audit/verify_live.py` 对 manifest SHA 漂移/缺失始终 FAIL；`build_live.py` 只在 build 阶段签一次 manifest，拒绝消费后重算。旧 locate 证据保留，不重训/不覆盖。
 - 全量测试：**241 passed, 1 skipped, 110 subtests passed**；审计自测 13/13 PASS。
 - **仍未闭环**：真实大模型仍是 gpu-server 本地直跑 `run.py`；尚未完成 gpu-client 客户端经 RGPU 投递双模型的完整闭环；下一阶段测试数据用用户指定的 **car 或 Pothole**，不再用 fish。
 
 > 更正上方“L5 审计 PASS”的旧口径：Locate 严格 bundle-binding 审计为 FAIL；SAM3 为 PASS。
+
+## 2026-10-30 离线代码收尾第二轮
+
+- `run.py` 的类别绑定支持 replay：合并父类 + `replay_class_prompts` + 新类；重复类名、new_only 携带回放提示词、提示词冲突均拒绝。
+- strict recovery 增加 reserved 修复回归：修复已有预留保留 `created_here=False`，不得被当作本进程新作业放行。
+- audit selftest 增加 bundle_manifest 缺失 FAIL 用例，14/14；build helper 5 项通过。
+- 全量 **247 passed, 1 skipped, 110 subtests passed**；定向 **38 passed**。
+- 仍未部署/未训练；历史 locate bundle-binding FAIL 不变。

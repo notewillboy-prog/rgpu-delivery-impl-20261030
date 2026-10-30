@@ -56,6 +56,28 @@ def test_attach_runtime_still_allows_terminal_job_under_strict_recovery(tmp_path
     assert runtime.state.value == "succeeded"
 
 
+def test_strict_recovery_rejects_repaired_reservation(tmp_path: Path) -> None:
+    """A prior-process reservation is repaired, but not trusted as new."""
+    app = _app(tmp_path)
+    spec = _spec("reserved-repair")
+    fingerprint = canonical_spec_fingerprint(spec)
+    app.idempotency.record(
+        "reserved-key", "job-20261030-000000-abcdef", fingerprint, status="reserved"
+    )
+    job_id, reused, created_here = app.idempotency.get_or_create_with_state(
+        "reserved-key",
+        fingerprint,
+        lambda reserved_id: app.store.create_job(spec, job_id=reserved_id),
+    )
+    assert job_id == "job-20261030-000000-abcdef"
+    assert reused is False
+    assert created_here is False
+    with pytest.raises(ProtocolError) as caught:
+        app.attach_runtime(job_id, fingerprint, created_here=created_here)
+    assert caught.value.code == ERR_CONFLICT
+    assert app.find_runtime(job_id) is None
+
+
 def test_idempotency_created_runtime_can_attach_but_unknown_one_cannot(tmp_path: Path) -> None:
     app = _app(tmp_path)
     spec = _spec("idem-strict")

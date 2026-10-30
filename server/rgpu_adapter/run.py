@@ -161,11 +161,12 @@ class RealDeps:
     def classes(self, root: Path) -> dict:
         """Derive the final class->prompt map from the trusted request.
 
-        The worker starts from ``parent_classes`` and merges every
-        ``training.class_prompts`` entry into it.  Validating only
-        ``parent_classes`` rejects a legitimate new class and accepts a request
-        whose prompt conflicts with the parent.  This method builds exactly the
-        worker's final map and rejects duplicate/conflicting prompts.
+        The worker starts from ``parent_classes``, merges replay prompts (if
+        any), then merges every ``training.class_prompts`` entry.  Validating
+        only ``parent_classes`` rejects a legitimate new class and accepts a
+        request whose prompt conflicts with the parent.  This method builds the
+        request-derivable part of the worker's final map and rejects
+        duplicate/conflicting prompts and new_only/replay mode mismatches.
         """
         request = json.loads((root / "request.json").read_text(encoding="utf-8"))
         parent = request.get("parent_classes")
@@ -183,21 +184,42 @@ class RealDeps:
         prompts = training.get("class_prompts")
         if not isinstance(prompts, list):
             raise ValueError("request.training.class_prompts is missing")
+        mode = training.get("training_mode")
+        if mode not in {None, "new_only", "replay"}:
+            raise ValueError("training.training_mode must be new_only or replay")
+        replay = training.get("replay_class_prompts") or []
+        if not isinstance(replay, list):
+            raise ValueError("training.replay_class_prompts must be a list")
+        # Only reject when the request explicitly says new_only.  If the mode
+        # is omitted, the worker may infer replay from parent/asset history;
+        # merging replay prompts is then compatible with the worker's map.
+        if mode == "new_only" and replay:
+            raise ValueError("new_only request must not carry replay_class_prompts")
         expected = dict(parent)
-        for item in prompts:
-            if not isinstance(item, dict):
-                raise ValueError("class_prompts entry is not an object")
-            name = item.get("class_name")
-            prompt = item.get("prompt")
-            if not isinstance(name, str) or not name.strip():
-                raise ValueError("class_prompts class_name is invalid")
-            if not isinstance(prompt, str) or not prompt.strip():
-                raise ValueError("class_prompts prompt is invalid")
-            if name in expected and expected[name] != prompt:
-                raise ValueError(
-                    f"new-class prompt conflicts with parent class: {name!r}"
-                )
-            expected[name] = prompt
+
+        def merge(items: list, kind: str) -> set[str]:
+            seen: set[str] = set()
+            for item in items:
+                if not isinstance(item, dict):
+                    raise ValueError(f"{kind} entry is not an object")
+                name = item.get("class_name")
+                prompt = item.get("prompt")
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError(f"{kind} class_name is invalid")
+                if not isinstance(prompt, str) or not prompt.strip():
+                    raise ValueError(f"{kind} prompt is invalid")
+                if name in seen:
+                    raise ValueError(f"{kind} has duplicate class: {name!r}")
+                seen.add(name)
+                if name in expected and expected[name] != prompt:
+                    raise ValueError(
+                        f"{kind} prompt conflicts with parent/replay class: {name!r}"
+                    )
+                expected[name] = prompt
+            return seen
+
+        merge(replay, "replay_class_prompts")
+        merge(prompts, "class_prompts")
         if not expected:
             raise ValueError("request binds no parent or new classes")
         return expected

@@ -210,6 +210,70 @@ def test_real_deps_classes_merges_parent_and_new_classes(tmp_path: Path, family:
         deps.classes(tmp_path)
 
 
+@pytest.mark.parametrize("family", ["locate", "sam3"])
+def test_real_deps_classes_replay_mode_merges_old_and_new(
+    tmp_path: Path, family: str
+) -> None:
+    request = {
+        "schema": 1,
+        "family": family,
+        "parent_fingerprint": "a" * 64,
+        "parent_classes": {"fish": "fish"},
+        "training": {
+            "training_mode": "replay",
+            "replay_class_prompts": [{"class_name": "fish", "prompt": "fish"}],
+            "class_prompts": [{"class_name": "car", "prompt": "car"}],
+        },
+    }
+    (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    assert RealDeps(tmp_path).classes(tmp_path) == {"fish": "fish", "car": "car"}
+
+
+def test_real_deps_classes_omitted_mode_merges_replay_prompts(tmp_path: Path) -> None:
+    """The worker may infer replay; don't false-reject its old classes."""
+    request = {
+        "family": "locate",
+        "parent_classes": {"fish": "fish"},
+        "training": {
+            "replay_class_prompts": [{"class_name": "fish", "prompt": "fish"}],
+            "class_prompts": [{"class_name": "car", "prompt": "car"}],
+        },
+    }
+    (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    assert RealDeps(tmp_path).classes(tmp_path) == {"fish": "fish", "car": "car"}
+
+
+def test_real_deps_classes_rejects_duplicate_class_prompt(tmp_path: Path) -> None:
+    request = {
+        "family": "locate",
+        "parent_classes": {},
+        "training": {
+            "class_prompts": [
+                {"class_name": "car", "prompt": "car"},
+                {"class_name": "car", "prompt": "vehicle"},
+            ],
+        },
+    }
+    (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    with pytest.raises(ValueError, match="duplicate class"):
+        RealDeps(tmp_path).classes(tmp_path)
+
+
+def test_real_deps_classes_new_only_rejects_replay_prompts(tmp_path: Path) -> None:
+    request = {
+        "family": "locate",
+        "parent_classes": {},
+        "training": {
+            "training_mode": "new_only",
+            "replay_class_prompts": [{"class_name": "fish", "prompt": "fish"}],
+            "class_prompts": [{"class_name": "car", "prompt": "car"}],
+        },
+    }
+    (tmp_path / "request.json").write_text(json.dumps(request), encoding="utf-8")
+    with pytest.raises(ValueError, match="must not carry replay"):
+        RealDeps(tmp_path).classes(tmp_path)
+
+
 def test_real_deps_parent_binding_is_explicit_local_to_remote(tmp_path: Path) -> None:
     request = {
         "family": "locate",

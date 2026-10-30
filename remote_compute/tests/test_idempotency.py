@@ -150,9 +150,13 @@ def test_reserved_without_create_is_repaired_with_same_id(tmp_path: Path) -> Non
     def create(job_id: str) -> None:
         created.append(job_id)
 
-    job_id, reused = index.get_or_create("reserved-key", _fp(), create)
+    job_id, reused, created_here = index.get_or_create_with_state(
+        "reserved-key", _fp(), create)
     assert job_id == "job-20261030-000000-abcdef"
     assert reused is False
+    # Repairing a prior reservation must not let strict recovery treat the
+    # unknown on-disk job as freshly created by this process.
+    assert created_here is False
     assert created == [job_id]
     assert index.lookup("reserved-key")["status"] == "committed"
 
