@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "family": "locate",
+  "archive_sha256": "72265af470c7b5c546b1fa6dfb93c6464096629a976bb785ad66e79e9c6ac560",
+  "approved_base_fingerprint": "f07a9ae5eaa737c26061f722c117a1bf552d548c9f2afecbf5858ec43f25da1e",
+  "parent_fingerprint": "f07a9ae5eaa737c26061f722c117a1bf552d548c9f2afecbf5858ec43f25da1e",
+  "classes": {},
+  "source": {
+    "kind": "archive_metadata_scan",
+    "detail": "Extracted the actual parent archive and scanned config.json. It has no id2label/label2id/class registry; only model/token configuration fields were present. The server weight index contains no class records for this archive. Therefore the parent class map is intentionally empty."
+  },
+  "class_evidence": []
+}

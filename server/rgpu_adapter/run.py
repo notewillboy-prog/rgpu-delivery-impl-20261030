@@ -37,8 +37,9 @@ from typing import Any, Dict, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 try:
-    from . import weights_validate
+    from . import bundle_mode, weights_validate
 except ImportError:  # script execution: ``python run.py``
+    import bundle_mode  # type: ignore
     import weights_validate  # type: ignore
 
 
@@ -122,7 +123,10 @@ class RealDeps:
         return package, core, worker, assets
 
     def prepare(self, root: Path, manifest_sha256: str) -> dict:
-        return self._prepare_module().prepare(root=root, expected_manifest_sha=manifest_sha256)
+        return self._prepare_module().prepare(
+            root=root, expected_manifest_sha=manifest_sha256,
+            expected_mode="train", requested_mode="train",
+        )
 
     def family_package(self, family: str) -> str:
         mapping = {"locate": "training_service", "sam3": "sam3_training_service"}
@@ -292,9 +296,20 @@ def execute(
     *,
     validate=weights_validate.validate_weights_zip,
     write_receipt: bool = True,
+    requested_mode: Optional[str] = None,
 ) -> dict:
     """Run one prepared job and return a receipt-like dict (never raises for job failure)."""
     root = Path(root).expanduser().resolve()
+    try:
+        bundle_mode.enforce(root, "train", requested_mode)
+        mode_record = bundle_mode.read_record(root) or {}
+    except ValueError as exc:
+        return {
+            "ok": False,
+            "phase": "mode_rejected",
+            "exit_code": 2,
+            "error": str(exc),
+        }
     outputs = root / "outputs"
     receipt_path = outputs / "run_receipt.json"
     if receipt_path.exists():
@@ -362,6 +377,19 @@ def execute(
         weights_path = Path(str(weights.get("path") or ""))
         if not weights_path.is_file():
             raise ValueError("weights.zip path is missing")
+        # RGPU collects only the job's outputs/ directory.  Hard-link (fallback:
+        # copy) the validated weights there so the delivery layer returns the
+        # exact artifact, not just a receipt that names an internal path.
+        published = outputs / "weights.zip"
+        if published.exists():
+            raise FileExistsError(f"delivery artifact already exists: {published}")
+        try:
+            os.link(weights_path, published)
+        except OSError:
+            shutil.copyfile(weights_path, published)
+        published_sha = _sha256(published)
+        if published_sha != (weights.get("sha256") or _sha256(weights_path)):
+            raise ValueError("published weights.zip SHA-256 mismatch")
         expected_classes = deps.classes(root)
         validation = validate(
             weights_path,
@@ -376,6 +404,11 @@ def execute(
             "phase": "executed",
             "ok": True,
             "family": family,
+            "mode": mode_record.get("mode"),
+            "entry_script": mode_record.get("entry_script"),
+            "entry": (["python", "-I", "-B", "-X", "utf8", mode_record["entry_script"],
+                       "--manifest-sha256", manifest_sha256, "--bundle-mode", mode_record["mode"]]
+                      if mode_record.get("mode") and mode_record.get("entry_script") else None),
             "request_id": prepared["request_id"],
             "job_id": prepared["job_id"],
             "job_state": job["state"],
@@ -387,8 +420,9 @@ def execute(
             "expected_classes": dict(expected_classes),
             "weights": {
                 "path": str(weights_path),
-                "sha256": weights.get("sha256") or _sha256(weights_path),
-                "size": weights_path.stat().st_size,
+                "delivery_path": str(published),
+                "sha256": published_sha,
+                "size": published.stat().st_size,
             },
             "validation": validation,
             "quality_status": "needs_review",
@@ -418,8 +452,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                         help="verified bundle_manifest.json SHA-256 from the sender")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent),
                         help="bundle root (default: this script's directory)")
+    parser.add_argument("--bundle-mode", choices=sorted(bundle_mode.MODES), default=None,
+                        help="assert the sealed bundle mode; mismatch is rejected")
     args = parser.parse_args(argv)
-    result = execute(args.root, args.manifest_sha256)
+    result = execute(args.root, args.manifest_sha256, requested_mode=args.bundle_mode)
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0 if result.get("ok") else int(result.get("exit_code", 2))
 

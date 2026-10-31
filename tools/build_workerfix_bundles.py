@@ -1,11 +1,12 @@
 #!/usr/bin/env python3
-"""Build fresh RGPU bundles that pin the patched worker.
+"""Build fresh RGPU bundles with sealed mode/entry and parent provenance.
 
 The upstream ``rgpu_bundle.build_bundle`` copies the family source tree from the
 live project root, which still contains the old worker.  This driver overlays the
 patched worker *before* the one post-build manifest rewrite, adds the new
-``run.py``/``weights_validate.py``, injects the trusted local parent id, and then
-seals the bundle.  It never starts ``prepare.py``, a service, or training.
+``run.py``/``prepare.py``/``weights_validate.py``/``bundle_mode.py``, injects the
+trusted local parent id, writes the explicit bundle-mode marker, and then seals
+the bundle.  It never starts ``prepare.py``, a service, or training.
 """
 from __future__ import annotations
 
@@ -16,6 +17,11 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+
+TOOLS = Path(__file__).resolve().parent
+if str(TOOLS) not in sys.path:
+    sys.path.insert(0, str(TOOLS))
+from parent_identity import load as load_parent_metadata  # noqa: E402
 
 PACKAGES = {"locate": "training_service", "sam3": "sam3_training_service"}
 FAMILIES = tuple(PACKAGES)
@@ -59,10 +65,10 @@ def seal(dest: Path) -> tuple[dict, str]:
 
 
 def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Path,
-              patched_root: Path, adapter_root: Path, dataset: Path | None = None,
-              class_name: str = "fish", class_prompt: str = "fish",
-              parent_classes: dict[str, str] | None = None,
-              name_prefix: str = "workerfix") -> dict:
+              patched_root: Path, adapter_root: Path, parent_metadata: Path,
+              dataset: Path | None = None, class_name: str = "fish",
+              class_prompt: str = "fish", mode: str = "train",
+              requirements: Path | None = None, name_prefix: str = "workerfix") -> dict:
     package = PACKAGES[family]
     dest = data_root / "bundles" / family
     receipt_path = data_root / "bundles" / f"{family}.bundle_receipt.json"
@@ -77,11 +83,25 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
     approved = archive_root / "locate_anything_3b.zip" if family == "locate" else archive_root / "sam3_image_base.zip"
     parent = archive_root / "locate_anything_3b.zip" if family == "locate" else archive_root / "sam3_parent_native.zip"
     dataset = Path(dataset) if dataset is not None else archive_root / "fishing_min.zip"
-    parent_classes = dict(parent_classes or {"fish": "fish"})
-    fingerprints = {
-        "locate": "f07a9ae5eaa737c26061f722c117a1bf552d548c9f2afecbf5858ec43f25da1e",
-        "sam3": "cb3452ff8bf09c969d7ec8869f746abdfb27606616464a7b416f7a47d3c747ba",
-    }
+    for path in (approved, parent, dataset):
+        if not path.is_file():
+            raise FileNotFoundError(path)
+
+    # Parent classes come only from a provenance sidecar bound to this exact
+    # archive.  An explicit empty mapping stays empty; there is no fish fallback.
+    metadata_path = Path(parent_metadata)
+    metadata = load_parent_metadata(
+        metadata_path, family=family, archive_sha256=sha256(parent)
+    )
+    parent_classes = dict(metadata["classes"])
+
+    sys.path.insert(0, str(adapter_root))
+    import bundle_mode  # noqa: PLC0415
+    if mode not in bundle_mode.MODES:
+        raise ValueError(f"unsupported bundle mode: {mode!r}")
+    entry_script = bundle_mode.MODES[mode]
+    mode_record = bundle_mode.build_record(mode)
+
     training = {
         "locate": {
             "class_prompts": [{"class_name": class_name, "prompt": class_prompt}],
@@ -96,19 +116,17 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
             "name": f"{name_prefix}-sam3-1step", "training_mode": "new_only",
         },
     }
-    for path in (approved, parent, dataset):
-        if not path.is_file():
-            raise FileNotFoundError(path)
 
     builder_receipt = rgpu_bundle.build_bundle(
         dest, family, approved, parent, dataset,
-        approved_base_fingerprint=fingerprints[family],
-        parent_fingerprint=fingerprints[family],
+        approved_base_fingerprint=metadata["approved_base_fingerprint"],
+        parent_fingerprint=metadata["parent_fingerprint"],
         parent_classes=parent_classes,
         training=training[family],
     )
 
-    # Overlay the independently patched producer BEFORE the only manifest seal.
+    # Overlay the independently patched producer and adapter entry scripts
+    # BEFORE the only manifest seal.
     target_worker = dest / "server" / package / "worker.py"
     source_worker = patched_root / package / "worker.py"
     if target_worker.is_symlink() or not target_worker.is_file():
@@ -117,12 +135,22 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
     if sha256(target_worker) != sha256(source_worker):
         raise RuntimeError("patched worker copy mismatch")
 
-    for name in ("run.py", "weights_validate.py"):
+    for name in ("run.py", "prepare.py", "weights_validate.py", "bundle_mode.py"):
         source = adapter_root / name
         target = dest / name
+        if not source.is_file():
+            raise FileNotFoundError(source)
         shutil.copyfile(source, target)
         if sha256(target) != sha256(source):
             raise RuntimeError(f"{name} copy mismatch")
+
+    if requirements is not None:
+        source = Path(requirements)
+        if not source.is_file():
+            raise FileNotFoundError(source)
+        shutil.copyfile(source, dest / "requirements.txt")
+
+    write_json(dest / "bundle_mode.json", mode_record)
 
     request_path = dest / "request.json"
     request = json.loads(request_path.read_text(encoding="utf-8"))
@@ -138,22 +166,40 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
     worker_text = target_worker.read_text(encoding="utf-8")
     if worker_text.count("parent_model_fingerprint") != 2:
         raise RuntimeError("patched worker is missing the binding fields")
-    scripts = {name: sha256(dest / name) for name in ("run.py", "weights_validate.py")}
+    scripts = {name: sha256(dest / name) for name in
+               ("run.py", "prepare.py", "weights_validate.py", "bundle_mode.py")}
+    if manifest.get("bundle_mode.json") != sha256(dest / "bundle_mode.json"):
+        raise RuntimeError("manifest does not bind the bundle mode marker")
+    entry = ["python", "-I", "-B", "-X", "utf8", entry_script,
+             "--manifest-sha256", manifest_sha, "--bundle-mode", mode]
+    outputs = ["outputs/**", "logs/**"] if mode == "train" else ["outputs/**"]
     final = {
         "schema": 1,
         "directory": str(dest.resolve()),
         "family": family,
         "request_id": builder_receipt.get("request_id"),
         "manifest_sha256": manifest_sha,
-        "entry_script_sha256": scripts["run.py"],
-        "mode": "prepare_only",
-        "entry": ["python", "-I", "-B", "-X", "utf8", "run.py", "--manifest-sha256", manifest_sha],
-        "outputs": ["outputs/**"],
+        "entry_script": entry_script,
+        "entry_script_sha256": scripts[entry_script],
+        "mode": mode,
+        "entry": entry,
+        "outputs": outputs,
         "builder_manifest_sha256": builder_receipt.get("manifest_sha256"),
-        "approved_base_fingerprint": fingerprints[family],
-        "parent_fingerprint": fingerprints[family],
+        "approved_base_fingerprint": metadata["approved_base_fingerprint"],
+        "parent_fingerprint": metadata["parent_fingerprint"],
         "parent_model_id": local_parent_id,
+        "parent_metadata": {
+            "path": str(metadata_path.resolve()),
+            "sha256": sha256(metadata_path),
+            "source": metadata["source"],
+            "class_evidence": metadata["class_evidence"],
+            "archive_sha256": metadata["archive_sha256"],
+        },
         "scripts": scripts,
+        "requirements": {
+            "sha256": sha256(dest / "requirements.txt"),
+            "path": str((dest / "requirements.txt").resolve()),
+        },
         "dataset": {"path": str(dataset.resolve()), "sha256": sha256(dataset)},
         "parent_classes": parent_classes,
         "new_class": {"name": class_name, "prompt": class_prompt},
@@ -177,13 +223,17 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
         "receipt": str(receipt_path.resolve()),
         "manifest_sha256": manifest_sha,
         "manifest_files": len(manifest),
+        "mode": mode,
+        "entry_script": entry_script,
+        "entry": entry,
         "worker_sha256": worker_sha,
         "worker_source_sha256": worker_source_sha,
         "scripts": scripts,
         "parent_model_id": local_parent_id,
-        "dataset_sha256": sha256(dataset),
+        "parent_fingerprint": metadata["parent_fingerprint"],
         "parent_classes": parent_classes,
         "new_class": {"name": class_name, "prompt": class_prompt},
+        "dataset_sha256": sha256(dataset),
     }
 
 
@@ -194,10 +244,12 @@ def main() -> int:
     parser.add_argument("--archive-root", type=Path, required=True)
     parser.add_argument("--patched-root", type=Path, required=True)
     parser.add_argument("--adapter-root", type=Path, required=True)
+    parser.add_argument("--parent-metadata", type=Path, required=True)
     parser.add_argument("--dataset", type=Path, default=None)
     parser.add_argument("--class-name", default="fish")
     parser.add_argument("--class-prompt", default="fish")
-    parser.add_argument("--parent-classes-json", default='{"fish": "fish"}')
+    parser.add_argument("--mode", choices=("prepare_only", "train"), default="train")
+    parser.add_argument("--requirements", type=Path, default=None)
     parser.add_argument("--name-prefix", default="workerfix")
     parser.add_argument("--only", action="append", choices=FAMILIES, default=None)
     args = parser.parse_args()
@@ -210,9 +262,11 @@ def main() -> int:
             family, base_root=args.base_root.resolve(),
             data_root=args.data_root.resolve(), archive_root=args.archive_root.resolve(),
             patched_root=args.patched_root.resolve(), adapter_root=args.adapter_root.resolve(),
+            parent_metadata=args.parent_metadata.resolve(),
             dataset=args.dataset.resolve() if args.dataset is not None else None,
             class_name=args.class_name, class_prompt=args.class_prompt,
-            parent_classes=json.loads(args.parent_classes_json),
+            mode=args.mode,
+            requirements=args.requirements.resolve() if args.requirements is not None else None,
             name_prefix=args.name_prefix,
         ))
     write_json(args.data_root / "build_result.json", {"ok": True, "built": built})

@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "family": "sam3",
+  "archive_sha256": "632fcfc1f2d65a9a671f8b4db4fa30280695ddf04a67c3f36c666cf7a36214c7",
+  "approved_base_fingerprint": "cb3452ff8bf09c969d7ec8869f746abdfb27606616464a7b416f7a47d3c747ba",
+  "parent_fingerprint": "cb3452ff8bf09c969d7ec8869f746abdfb27606616464a7b416f7a47d3c747ba",
+  "classes": {},
+  "source": {
+    "kind": "archive_member_scan",
+    "detail": "The parent archive contains only the native sam3.pt checkpoint; it has no config/metadata class registry and the native SAM3 checkpoint is class-agnostic. The server weight index contains no class records for this archive. Therefore the parent class map is intentionally empty."
+  },
+  "class_evidence": []
+}

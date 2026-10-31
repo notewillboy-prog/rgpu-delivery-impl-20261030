@@ -139,6 +139,9 @@ def _deps(root: Path, **kwargs) -> Deps:
 
 
 def test_execute_success_writes_receipt_and_validates_zip(tmp_path: Path) -> None:
+    (tmp_path / "bundle_mode.json").write_text(
+        json.dumps({"schema": 1, "mode": "train", "entry_script": "run.py"}), encoding="utf-8"
+    )
     result = execute(tmp_path, "b" * 64, deps=_deps(tmp_path))
     assert result["ok"] is True, result
     assert result["phase"] == "executed"
@@ -146,6 +149,10 @@ def test_execute_success_writes_receipt_and_validates_zip(tmp_path: Path) -> Non
     assert result["quality_status"] == "needs_review"
     receipt = json.loads((tmp_path / "outputs" / "run_receipt.json").read_text(encoding="utf-8"))
     assert receipt["job_id"] == result["job_id"]
+    assert receipt["mode"] == "train"
+    assert receipt["entry_script"] == "run.py"
+    assert receipt["entry"][5] == "run.py"
+    assert receipt["entry"][-2:] == ["--bundle-mode", "train"]
     assert (tmp_path / "outputs" / "logs" / "events.jsonl").is_file()
 
 
