@@ -46,6 +46,18 @@ def verify(family: str, data_root: Path, patched_root: Path) -> dict:
         "not_consumed": not any((bundle / name).exists() for name in (
             "prepare.events.jsonl", "prepared_runtime", "outputs")),
     }
+    dataset = receipt.get("dataset")
+    if dataset:
+        checks.update({
+            "receipt_dataset_sha": sha256(bundle / "inputs" / "dataset.zip") == dataset.get("sha256"),
+            "request_dataset_sha": request.get("dataset", {}).get("sha256") == dataset.get("sha256"),
+            "request_parent_classes": request.get("parent_classes") == receipt.get("parent_classes"),
+            "request_new_class": any(
+                prompt.get("class_name") == receipt.get("new_class", {}).get("name")
+                and prompt.get("prompt") == receipt.get("new_class", {}).get("prompt")
+                for prompt in request.get("training", {}).get("class_prompts", [])
+            ),
+        })
     return {
         "family": family,
         "bundle": str(bundle.resolve()),

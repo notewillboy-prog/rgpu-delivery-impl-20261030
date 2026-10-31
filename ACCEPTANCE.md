@@ -125,3 +125,14 @@ python -m client.main submit <locate-project> --server 127.0.0.1:18813 \
 - 回归：真实 worker + FakeEngine 离线 E2E 9 passed；全量 256 passed / 1 skipped / 110 subtests；定向 47 passed。
 - 新 bundle（gpu-server，未消费）：locate manifest `be32fd0e...` / worker `15b13ead...`；sam3 manifest `d1c55af6...` / worker `b463e661...`。
 - 未启动服务/训练/部署；候选仍 `needs_review`；完整 gpu-client→RGPU 闭环未完成。
+
+
+## 2026-10-31 构建器参数化与 Pothole 准备态
+
+- `build_workerfix_bundles.py` 支持 `--dataset/--class-name/--class-prompt/
+  --parent-classes-json/--name-prefix`，默认 fish 行为不变。
+- `verify_workerfix_bundles.py` 对带 dataset 字段的新 receipt 增加数据集 SHA
+  三方一致、parent_classes、new class 检查。
+- Pothole locate/sam3 两个 bundle 已在 gpu-server 构建并验证 `ok: true`、未消费；
+  manifest/worker 见审查仓库 `evidence/20261031/pothole/README.md`。
+- 未 prepare、未训练、未启动独立服务、未部署/发布；1 step 不证明质量。

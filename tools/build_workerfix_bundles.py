@@ -59,7 +59,10 @@ def seal(dest: Path) -> tuple[dict, str]:
 
 
 def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Path,
-              patched_root: Path, adapter_root: Path) -> dict:
+              patched_root: Path, adapter_root: Path, dataset: Path | None = None,
+              class_name: str = "fish", class_prompt: str = "fish",
+              parent_classes: dict[str, str] | None = None,
+              name_prefix: str = "workerfix") -> dict:
     package = PACKAGES[family]
     dest = data_root / "bundles" / family
     receipt_path = data_root / "bundles" / f"{family}.bundle_receipt.json"
@@ -73,23 +76,24 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
 
     approved = archive_root / "locate_anything_3b.zip" if family == "locate" else archive_root / "sam3_image_base.zip"
     parent = archive_root / "locate_anything_3b.zip" if family == "locate" else archive_root / "sam3_parent_native.zip"
-    dataset = archive_root / "fishing_min.zip"
+    dataset = Path(dataset) if dataset is not None else archive_root / "fishing_min.zip"
+    parent_classes = dict(parent_classes or {"fish": "fish"})
     fingerprints = {
         "locate": "f07a9ae5eaa737c26061f722c117a1bf552d548c9f2afecbf5858ec43f25da1e",
         "sam3": "cb3452ff8bf09c969d7ec8869f746abdfb27606616464a7b416f7a47d3c747ba",
     }
     training = {
         "locate": {
-            "class_prompts": [{"class_name": "fish", "prompt": "fish"}],
+            "class_prompts": [{"class_name": class_name, "prompt": class_prompt}],
             "steps": 1, "image_tokens": 1024, "max_train_per_class": 4,
             "max_eval_per_class": 2, "seed": 20261022,
-            "name": "workerfix-locate-1step", "training_mode": "new_only",
+            "name": f"{name_prefix}-locate-1step", "training_mode": "new_only",
         },
         "sam3": {
-            "class_prompts": [{"class_name": "fish", "prompt": "fish"}],
+            "class_prompts": [{"class_name": class_name, "prompt": class_prompt}],
             "steps": 1, "resolution": 1008, "max_train_per_class": 4,
             "max_eval_per_class": 2, "seed": 20261022,
-            "name": "workerfix-sam3-1step", "training_mode": "new_only",
+            "name": f"{name_prefix}-sam3-1step", "training_mode": "new_only",
         },
     }
     for path in (approved, parent, dataset):
@@ -100,7 +104,7 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
         dest, family, approved, parent, dataset,
         approved_base_fingerprint=fingerprints[family],
         parent_fingerprint=fingerprints[family],
-        parent_classes={"fish": "fish"},
+        parent_classes=parent_classes,
         training=training[family],
     )
 
@@ -150,6 +154,9 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
         "parent_fingerprint": fingerprints[family],
         "parent_model_id": local_parent_id,
         "scripts": scripts,
+        "dataset": {"path": str(dataset.resolve()), "sha256": sha256(dataset)},
+        "parent_classes": parent_classes,
+        "new_class": {"name": class_name, "prompt": class_prompt},
         "worker": {
             "package": package,
             "source": str(source_worker),
@@ -174,6 +181,9 @@ def patch_one(family: str, *, base_root: Path, data_root: Path, archive_root: Pa
         "worker_source_sha256": worker_source_sha,
         "scripts": scripts,
         "parent_model_id": local_parent_id,
+        "dataset_sha256": sha256(dataset),
+        "parent_classes": parent_classes,
+        "new_class": {"name": class_name, "prompt": class_prompt},
     }
 
 
@@ -184,6 +194,11 @@ def main() -> int:
     parser.add_argument("--archive-root", type=Path, required=True)
     parser.add_argument("--patched-root", type=Path, required=True)
     parser.add_argument("--adapter-root", type=Path, required=True)
+    parser.add_argument("--dataset", type=Path, default=None)
+    parser.add_argument("--class-name", default="fish")
+    parser.add_argument("--class-prompt", default="fish")
+    parser.add_argument("--parent-classes-json", default='{"fish": "fish"}')
+    parser.add_argument("--name-prefix", default="workerfix")
     parser.add_argument("--only", action="append", choices=FAMILIES, default=None)
     args = parser.parse_args()
     args.data_root.mkdir(parents=True, exist_ok=True)
@@ -195,6 +210,10 @@ def main() -> int:
             family, base_root=args.base_root.resolve(),
             data_root=args.data_root.resolve(), archive_root=args.archive_root.resolve(),
             patched_root=args.patched_root.resolve(), adapter_root=args.adapter_root.resolve(),
+            dataset=args.dataset.resolve() if args.dataset is not None else None,
+            class_name=args.class_name, class_prompt=args.class_prompt,
+            parent_classes=json.loads(args.parent_classes_json),
+            name_prefix=args.name_prefix,
         ))
     write_json(args.data_root / "build_result.json", {"ok": True, "built": built})
     print(json.dumps({"ok": True, "built": built}, ensure_ascii=False, indent=2))
