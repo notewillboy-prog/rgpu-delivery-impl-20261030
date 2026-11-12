@@ -8,7 +8,7 @@
 - 服务端：Linux（Python 标准库；CPU / NVIDIA GPU 均可）
 - 传输：单端口 TCP，自制长度前缀帧（JSON 控制 + 二进制分片），token 鉴权，断点续传
 
-需求来源：[增量训练前置技术_云端算力快速部署.txt](增量训练前置技术_云端算力快速部署.txt)
+完整远端 GPU 闭环与最新实测结果见 [仓库首页](../README.md)。
 
 ## 它解决什么问题
 
@@ -23,18 +23,18 @@
 
 ## 5 分钟本机跑通（Windows，CPU 模拟云端）
 
-前提：Python ≥ 3.9（项目自带 `.venv`，无需联网、无需 pip 安装任何依赖）。
+前提为 Python 3.9+。该标准库示例使用本机 Python，服务端在当前目录创建独立数据目录。真实远端 GPU 验收入口见 [仓库首页](../README.md)。
 
 ```powershell
 # 0) 进入项目根目录
-cd D:\test_x_demo\remote_gpu_calculate_demo
+cd remote_compute
 
 # 1) 起服务端（本机模拟一台云端 Linux 服务器；CPU 模式）
-& .venv\Scripts\python.exe -m server.main serve --host 127.0.0.1 --port 8765 --token demo-token --data-dir .tmp_server
+python -m server.main serve --host 127.0.0.1 --port 8765 --token demo-token --data-dir .tmp_server
 # 看到 RGPU_SERVER_READY host=127.0.0.1 port=8765 ... 即就绪
 
 # 2) 另开一个终端，一键提交增量训练任务
-& .venv\Scripts\python.exe -m client.main submit examples\incremental_train `
+python -m client.main submit examples\incremental_train `
     --entry "python train.py --epochs 3 --data data.csv --out outputs --model model.json" `
     --server 127.0.0.1:8765 --token demo-token --timeout 300
 
@@ -45,7 +45,7 @@ cd D:\test_x_demo\remote_gpu_calculate_demo
 图形界面（一键增量训练）：
 
 ```powershell
-& .venv\Scripts\python.exe -m client.main gui
+python -m client.main gui
 ```
 
 填服务器地址 / token / 项目目录 / 入口命令，点「开始增量训练」即可，日志和进度实时显示。
@@ -95,14 +95,14 @@ docs/        协议、架构、使用文档
 ## 测试
 
 ```powershell
-& .venv\Scripts\python.exe -m unittest discover -s tests -v
+python -m unittest discover -s tests -v
 # 或（PowerShell 默认执行策略会拦 .ps1，必须带 -ExecutionPolicy Bypass）
 powershell -NoProfile -ExecutionPolicy Bypass -File scripts\run_checks.ps1
 ```
 
 - `run_checks.ps1` 默认**包含端到端测试**（自动起 server 18766 + 真跑 client 提交示例任务）；
   只跑离线单元测试用 `-SkipE2E`，或设 `RGPU_SKIP_E2E=1`；e2e 端口可用 `RGPU_E2E_PORT` 覆盖。
-- 当前基线：**148 个用例全绿**（含 8 个真 e2e：成功/增量/环境缓存/错误 token/非零退出/超时/哈希篡改/真断线续传）。
+- 仓库级完整测试从根目录执行 `python -m pytest remote_compute/tests -q`。2026-11-12 实测 283 项通过、2 项跳过、110 个子测试通过，包含真实本地服务端的端到端覆盖。
 - 覆盖：帧协议、哈希与环境指纹、路径安全、打包清单、上传/下载、作业成功/失败/超时、
   错误 token、哈希不匹配、断线续传、二次提交环境复用。
 - 测试临时目录放在 `<项目根>/_rgpu_data/tests/`（DSH 沙箱下系统 temp 目录写文件会被拒）。

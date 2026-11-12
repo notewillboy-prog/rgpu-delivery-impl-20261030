@@ -5,3 +5,4 @@ _rgpu_data/
 *.pyc
 *.pyo
 .venv/
+模型记录.md
